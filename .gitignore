@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.pytest_cache/
+cache/
+output/
+*.wav
+*.mp3
+.DS_Store
