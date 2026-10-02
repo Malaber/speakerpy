@@ -2,6 +2,7 @@
 from collections import deque
 from dataclasses import dataclass, field, replace
 import hashlib
+import json
 import logging
 from pathlib import Path
 import shutil
@@ -11,6 +12,7 @@ import uuid
 from tts.audio import assemble, export_mp3, valid_audio
 from tts.engine import Cancelled, SubprocessEngine, check_cancel
 from tts.voices import cache_key
+from tts.parser import Chunk
 
 TERMINAL = {'complete', 'failed', 'cancelled'}
 logger = logging.getLogger(__name__)
@@ -23,6 +25,8 @@ class Job:
     voices: dict
     language: str
     pause_ms: int
+    kind: str = 'dialogue'
+    design: dict | None = None
     state: str = 'queued'
     completed: int = 0
     cached: int = 0
@@ -47,10 +51,7 @@ class JobManager:
 
     def submit(self, chunks, voices, language, pause_ms):
         with self.condition:
-            if self.stopping:
-                raise RuntimeError('Server is shutting down.')
-            if len(self.pending) >= self.config.queue_size:
-                raise OverflowError('Queue is full. Wait for a job to finish.')
+            self._check_capacity()
             # Keep immutable reference copies, so editing the library cannot poison caches.
             snapshots = {}
             reference_dir = self.config.cache / 'references'
@@ -72,21 +73,43 @@ class JobManager:
                     finally:
                         temp.unlink(missing_ok=True)
                 snapshots[speaker] = replace(voice, reference=str(target))
-            while len(self.jobs) >= self.config.max_jobs:
-                oldest = next((key for key, job in self.jobs.items() if job.state in TERMINAL), None)
-                if oldest is None:
-                    raise OverflowError('Too many active jobs.')
-                del self.jobs[oldest]
             job = Job(uuid.uuid4().hex, chunks, snapshots, language, pause_ms)
-            self.jobs[job.id] = job
-            self.pending.append(job.id)
-            self.condition.notify()
-            return self.snapshot(job.id)
+            return self._enqueue(job)
+
+    def _check_capacity(self):
+        if self.stopping:
+            raise RuntimeError('Server is shutting down.')
+        if len(self.pending) >= self.config.queue_size:
+            raise OverflowError('Queue is full. Wait for a job to finish.')
+        while len(self.jobs) >= self.config.max_jobs:
+            oldest = next((key for key, job in self.jobs.items() if job.state in TERMINAL), None)
+            if oldest is None:
+                raise OverflowError('Too many active jobs.')
+            del self.jobs[oldest]
+
+    def _enqueue(self, job):
+        self.jobs[job.id] = job
+        self.pending.append(job.id)
+        self.condition.notify()
+        return self.snapshot(job.id)
+
+    def submit_design(self, voice_id, name, description, text, language):
+        with self.condition:
+            self._check_capacity()
+            if any(j.kind == 'voice' and j.design['id'] == voice_id and j.state not in TERMINAL
+                   for j in self.jobs.values()):
+                raise ValueError('This voice already has a queued or running regeneration.')
+            job = Job(uuid.uuid4().hex, [Chunk(name, text, 0)], {}, language, 0,
+                      kind='voice', design={'id': voice_id, 'name': name, 'description': description,
+                                           'ref_text': text, 'language': language})
+            return self._enqueue(job)
 
     def snapshot(self, job_id):
         with self.condition:
             job = self.jobs[job_id]
             return {'id': job.id, 'state': job.state, 'completed': job.completed,
+                    'kind': job.kind, 'voice_id': job.design['id'] if job.design else None,
+                    'title': job.design['name'] if job.design else 'Conversation',
                     'total': len(job.chunks), 'progress': round(100 * job.completed / len(job.chunks)),
                     'cached': job.cached, 'current': job.current, 'error': job.error,
                     'revision': job.revision, 'downloads': dict(job.downloads),
@@ -134,6 +157,9 @@ class JobManager:
             self._run(job)
 
     def _run(self, job):
+        if job.kind == 'voice':
+            self._design(job)
+            return
         engine = None
         directory = self.config.output / job.id
         try:
@@ -175,3 +201,50 @@ class JobManager:
             # Crashed/killed workers can leave an incomplete chunk, never a cache hit.
             for partial in self.config.cache.glob('*.partial.wav'):
                 partial.unlink(missing_ok=True)
+
+    def _design(self, job):
+        engine = None
+        directory = self.config.output / job.id
+        staging = self.config.voices / f'.{job.id}'
+        try:
+            directory.mkdir()
+            staging.mkdir(parents=True)
+            engine = self.engine_factory(self.config)
+            self.update(job, current={'speaker': job.design['name'], 'voice': 'Voice design',
+                                      'text': job.design['ref_text']})
+            target = staging / 'reference.wav'
+            engine.design(job.design['ref_text'], job.design['description'], job.language,
+                          target, job.cancel, directory / 'worker.log')
+            engine.close()
+            check_cancel(job.cancel)
+            if not valid_audio(target):
+                raise RuntimeError('Voice designer did not produce a valid WAV.')
+            import soundfile as sf
+            if sf.info(target).duration > 60:
+                raise ValueError('Designed reference exceeds 60 seconds; use a shorter text.')
+            (staging / 'voice.json').write_text(json.dumps(job.design, ensure_ascii=False, indent=2), encoding='utf-8')
+            # API library reads take this same lock: publish audio + metadata together.
+            with self.condition:
+                check_cancel(job.cancel)
+                destination = self.config.voices / job.design['id']
+                if not destination.exists():
+                    staging.replace(destination)
+                else:
+                    # Keep old artifacts until the new generation has succeeded.
+                    # Backups also make interrupted publication recoverable from disk.
+                    for name in ('reference.wav', 'voice.json'):
+                        existing = destination / name
+                        if existing.exists():
+                            shutil.copy2(existing, destination / f'{name}.previous')
+                    (staging / 'reference.wav').replace(destination / 'reference.wav')
+                    (staging / 'voice.json').replace(destination / 'voice.json')
+                self.update(job, state='complete', completed=1, current=None)
+        except Cancelled:
+            self.update(job, state='cancelled', current=None)
+        except Exception as exc:
+            logger.exception('Voice job %s failed', job.id)
+            self.update(job, state='failed', error=str(exc), current=None)
+        finally:
+            if engine:
+                engine.close()
+            shutil.rmtree(staging, ignore_errors=True)

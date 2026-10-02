@@ -16,6 +16,8 @@ class Config:
     max_jobs: int = 100
     queue_size: int = 10
     generation: dict = field(default_factory=lambda: {'max_new_tokens': 2048, 'do_sample': True})
+    bootstrap_voices: bool = True
+    design_model: str = 'Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign'
 
     def __post_init__(self):
         if not 1 <= self.recycle_chunks <= 20:

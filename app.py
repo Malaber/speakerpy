@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import json
 from pathlib import Path
 import shutil
+import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -15,7 +16,7 @@ from tts.config import Config, ROOT
 from tts.engine import SubprocessEngine, application_lock
 from tts.jobs import JobManager, TERMINAL
 from tts.parser import parse_dialogue, prepare_chunks
-from tts.voices import LANGUAGES, load_voices
+from tts.voices import LANGUAGES, COMPARISON_TEXT, STARTER_VOICES, load_voices
 
 
 class ParseRequest(BaseModel):
@@ -29,6 +30,17 @@ class JobRequest(ParseRequest):
     pause_ms: int = Field(default=250, ge=0, le=3000)
 
 
+class VoiceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str = Field(min_length=5, max_length=1000)
+    ref_text: str = Field(default=COMPARISON_TEXT, min_length=10, max_length=600)
+    language: str = 'German'
+
+
+class RegenerateRequest(BaseModel):
+    description: str | None = Field(default=None, min_length=5, max_length=1000)
+
+
 def create_app(config=None, engine_factory=SubprocessEngine):
     config = config or Config()
 
@@ -37,6 +49,9 @@ def create_app(config=None, engine_factory=SubprocessEngine):
         with application_lock(config.cache):
             app.state.manager = JobManager(config, engine_factory)
             try:
+                if config.bootstrap_voices and not any(config.voices.glob('*/voice.json')):
+                    for voice_id, name, description in STARTER_VOICES:
+                        app.state.manager.submit_design(voice_id, name, description, COMPARISON_TEXT, 'German')
                 yield
             finally:
                 await asyncio.to_thread(app.state.manager.close)
@@ -68,8 +83,45 @@ def create_app(config=None, engine_factory=SubprocessEngine):
 
     @app.get('/voices')
     def voices():
-        library, errors = load_voices(config.voices)
-        return {'voices': [voice.public() for voice in library.values()], 'errors': errors}
+        with app.state.manager.condition:
+            library, errors = load_voices(config.voices)
+            return {'voices': [voice.public() for voice in library.values()], 'errors': errors,
+                    'comparison_text': COMPARISON_TEXT}
+
+    def enqueue_design(voice_id, name, description, text, language):
+        if language not in LANGUAGES or not name.strip() or not description.strip() or not text.strip():
+            raise HTTPException(422, 'Provide a name, description, reference text and supported language.')
+        try:
+            return app.state.manager.submit_design(voice_id, name.strip(), description, text, language)
+        except OverflowError as exc:
+            raise HTTPException(429, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post('/voices', status_code=202)
+    def create_voice(body: VoiceRequest):
+        return enqueue_design(uuid.uuid4().hex, body.name, body.description, body.ref_text, body.language)
+
+    @app.post('/voices/{voice_id}/regenerate', status_code=202)
+    def regenerate_voice(voice_id: str, body: RegenerateRequest):
+        with app.state.manager.condition:
+            library, _ = load_voices(config.voices)
+            if voice_id not in library:
+                raise HTTPException(404, 'Unknown voice.')
+            voice = library[voice_id]
+            description = body.description or voice.description
+            if not description:
+                raise HTTPException(422, 'Provide a description to regenerate this imported voice.')
+            return enqueue_design(voice.id, voice.name, description, voice.ref_text, voice.language)
+
+    @app.get('/voices/{voice_id}/audio')
+    def voice_audio(voice_id: str):
+        with app.state.manager.condition:
+            library, _ = load_voices(config.voices)
+            if voice_id not in library:
+                raise HTTPException(404, 'Unknown voice.')
+            return FileResponse(library[voice_id].reference, media_type='audio/wav',
+                                headers={'Cache-Control': 'no-cache'})
 
     @app.post('/parse')
     def parse_text(body: ParseRequest):
@@ -81,16 +133,17 @@ def create_app(config=None, engine_factory=SubprocessEngine):
         _, speakers, chunks = parse(body)
         if body.language not in LANGUAGES:
             raise HTTPException(422, 'Unsupported language.')
-        library, _ = load_voices(config.voices)
-        if set(body.voices) != set(speakers):
-            raise HTTPException(422, 'Assign a voice to every detected speaker, then submit again.')
-        if any(voice not in library for voice in body.voices.values()):
-            raise HTTPException(422, 'Selected voice is missing or invalid. Refresh the voice library.')
         if not shutil.which('ffmpeg'):
             raise HTTPException(503, 'ffmpeg is required for MP3 export. Install it and retry.')
         try:
-            return app.state.manager.submit(chunks, {s: library[body.voices[s]] for s in speakers},
-                                            body.language, body.pause_ms)
+            with app.state.manager.condition:
+                library, _ = load_voices(config.voices)
+                if set(body.voices) != set(speakers):
+                    raise HTTPException(422, 'Assign a voice to every detected speaker, then submit again.')
+                if any(voice not in library for voice in body.voices.values()):
+                    raise HTTPException(422, 'Selected voice is missing or invalid. Refresh the voice library.')
+                return app.state.manager.submit(chunks, {s: library[body.voices[s]] for s in speakers},
+                                                body.language, body.pause_ms)
         except OverflowError as exc:
             raise HTTPException(429, str(exc)) from exc
         except (ValueError, OSError) as exc:
@@ -108,6 +161,21 @@ def create_app(config=None, engine_factory=SubprocessEngine):
     def cancel_job(job_id: str):
         snapshot(job_id)
         return app.state.manager.cancel_job(job_id)
+
+    @app.post('/jobs/{job_id}/retry', status_code=202)
+    def retry_job(job_id: str):
+        with app.state.manager.condition:
+            status = snapshot(job_id)
+            if status['state'] not in TERMINAL:
+                raise HTTPException(409, 'Wait for this job to finish before retrying.')
+            job = app.state.manager.jobs[job_id]
+            if job.kind == 'voice':
+                d = job.design
+                return enqueue_design(d['id'], d['name'], d['description'], d['ref_text'], d['language'])
+            try:
+                return app.state.manager.submit(job.chunks, job.voices, job.language, job.pause_ms)
+            except OverflowError as exc:
+                raise HTTPException(429, str(exc)) from exc
 
     @app.get('/jobs/{job_id}/events')
     async def events(job_id: str, request: Request):

@@ -166,3 +166,70 @@ def test_single_server_lock(tmp_path):
         with pytest.raises(RuntimeError, match='already running'):
             with application_lock(tmp_path):
                 pass
+
+
+def fake_design(self, text, description, language, target, cancel, log_path):
+    self.synthesize(text, type('Voice', (), {'id': 'designed'})(), language, target, cancel, log_path)
+
+
+FakeEngine.design = fake_design
+
+
+def test_first_startup_creates_three_disk_voices(tmp_path):
+    FakeEngine.calls, FakeEngine.active, FakeEngine.peak = [], 0, 0
+    FakeEngine.gate, FakeEngine.fail_once = None, False
+    with TestClient(create_app(Config(root=tmp_path), FakeEngine)) as client:
+        jobs = client.get('/jobs').json()
+        assert len(jobs) == 3
+        for job in jobs:
+            assert wait(client, job['id'])['state'] == 'complete'
+        library = client.get('/voices').json()['voices']
+        assert len(library) == 3
+        assert len({v['ref_text'] for v in library}) == 1
+        assert len({v['description'] for v in library}) == 3
+        assert FakeEngine.peak == 1
+        for voice in library:
+            assert client.get(f'/voices/{voice["id"]}/audio').content[:4] == b'RIFF'
+    with TestClient(create_app(Config(root=tmp_path), FakeEngine)) as client:
+        assert client.get('/jobs').json() == []
+        assert len(client.get('/voices').json()['voices']) == 3
+
+
+def test_add_regenerate_and_voice_snapshot(client, tmp_path):
+    created = client.post('/voices', json={'name': 'New voice', 'description': 'Deep calm voice'}).json()
+    assert wait(client, created['id'])['state'] == 'complete'
+    voice_id = created['voice_id']
+    before = client.get(f'/voices/{voice_id}/audio').content
+    FakeEngine.gate = threading.Event()
+    regeneration = client.post(f'/voices/{voice_id}/regenerate', json={'description': 'Warm expressive voice'}).json()
+    wait(client, regeneration['id'], 'generating')
+    assert client.post(f'/voices/{voice_id}/regenerate', json={}).status_code == 409
+    assert client.get(f'/voices/{voice_id}/audio').content == before
+    body = {'text': 'A: Test voice snapshot', 'voices': {'A': voice_id}}
+    conversation_id = submit(client, body)
+    snapshot_voice = client.app.state.manager.jobs[conversation_id].voices['A']
+    FakeEngine.gate.set()
+    assert wait(client, regeneration['id'])['state'] == 'complete'
+    assert wait(client, conversation_id)['state'] == 'complete'
+    voice = next(v for v in client.get('/voices').json()['voices'] if v['id'] == voice_id)
+    assert voice['description'] == 'Warm expressive voice'
+    assert voice['fingerprint'] != snapshot_voice.fingerprint
+    assert Path(snapshot_voice.reference).exists()
+    # Failed regeneration must preserve the working sample and metadata.
+    FakeEngine.fail_once = True
+    failed = client.post(f'/voices/{voice_id}/regenerate', json={'description': 'Will fail this time'}).json()
+    assert wait(client, failed['id'])['state'] == 'failed'
+    voice_after = next(v for v in client.get('/voices').json()['voices'] if v['id'] == voice_id)
+    assert voice_after['fingerprint'] == voice['fingerprint']
+    retry = client.post(f'/jobs/{failed["id"]}/retry', json={}).json()
+    assert wait(client, retry['id'])['state'] == 'complete'
+
+
+def test_no_pause_inside_turn(client, tmp_path):
+    body = {'text': 'A: ' + 'Hallo Welt. ' * 35 + '\nB: Ende.',
+            'max_chars': 100, 'voices': {'A': 'anna', 'B': 'klaus'}, 'pause_ms': 300}
+    job_id = submit(client, body)
+    status = wait(client, job_id)
+    assert status['state'] == 'complete'
+    assert status['total'] > 2
+    assert sf.info(tmp_path / 'output' / job_id / 'conversation.wav').frames == status['total'] * 2400 + 7200

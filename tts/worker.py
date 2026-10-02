@@ -31,16 +31,21 @@ def main():
                     model = Qwen3TTSModel.from_pretrained(
                         request['model'], device_map={'': device}, dtype=dtype,
                         attn_implementation='sdpa')
-                voice = request['voice']
                 with torch.inference_mode():
-                    key = voice['fingerprint']
-                    if key not in prompts:
-                        prompts[key] = model.create_voice_clone_prompt(
-                            ref_audio=voice['reference'], ref_text=voice['ref_text'],
-                            x_vector_only_mode=False)
-                    wavs, rate = model.generate_voice_clone(
-                        text=request['text'], language=request['language'],
-                        voice_clone_prompt=prompts[key], **request['settings'])
+                    if request['operation'] == 'design':
+                        wavs, rate = model.generate_voice_design(
+                            text=request['text'], language=request['language'],
+                            instruct=request['description'], **request['settings'])
+                    else:
+                        voice = request['voice']
+                        key = voice['fingerprint']
+                        if key not in prompts:
+                            prompts[key] = model.create_voice_clone_prompt(
+                                ref_audio=voice['reference'], ref_text=voice['ref_text'],
+                                x_vector_only_mode=False)
+                        wavs, rate = model.generate_voice_clone(
+                            text=request['text'], language=request['language'],
+                            voice_clone_prompt=prompts[key], **request['settings'])
                 data = wavs[0]
                 if isinstance(data, torch.Tensor):
                     data = data.detach().float().cpu().numpy()

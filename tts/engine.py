@@ -43,6 +43,16 @@ class SubprocessEngine:
         self.log = None
 
     def synthesize(self, text, voice, language, target, cancel, log_path):
+        request = {'operation': 'clone', 'text': text, 'voice': voice.__dict__,
+                   'language': language, 'target': str(target), 'model': self.config.model}
+        self._request(request, cancel, log_path)
+
+    def design(self, text, description, language, target, cancel, log_path):
+        request = {'operation': 'design', 'text': text, 'description': description,
+                   'language': language, 'target': str(target), 'model': self.config.design_model}
+        self._request(request, cancel, log_path)
+
+    def _request(self, request, cancel, log_path):
         check_cancel(cancel)
         if self.process is None:
             self.log = log_path.open('a')
@@ -51,10 +61,8 @@ class SubprocessEngine:
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
                 text=True, bufsize=1,
                 env={**os.environ, 'TOKENIZERS_PARALLELISM': 'false', 'OMP_NUM_THREADS': '2'})
-        request = {'text': text, 'voice': voice.__dict__, 'language': language,
-                   'target': str(target), 'model': self.config.model,
-                   'settings': self.config.generation, 'device': self.config.device,
-                   'mps_fraction': self.config.mps_fraction}
+        request.update(settings=self.config.generation, device=self.config.device,
+                       mps_fraction=self.config.mps_fraction)
         try:
             self.process.stdin.write(json.dumps(request) + '\n')
             self.process.stdin.flush()

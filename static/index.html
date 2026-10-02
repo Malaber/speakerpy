@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Speakerpy · Dialogue studio</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><div><p class="eyebrow">SPEAKERPY · LOCAL AUDIO STUDIO</p><h1>Bring a conversation to life.</h1>
+      <p>Write a dialogue, choose its voices, and listen.</p></div><span class="badge" id="connection">Connecting…</span></header>
+    <p id="message" role="status" aria-live="polite" hidden></p>
+    <div class="layout">
+      <section class="panel composer" aria-labelledby="dialogue-heading">
+        <div class="section-head"><h2 id="dialogue-heading">01 / Your dialogue</h2><span id="parse-summary"></span></div>
+        <label for="dialogue">Start each turn with a speaker name and a colon.</label>
+        <textarea id="dialogue" rows="12" maxlength="100000" spellcheck="false">Sprecher 1: Hallo! Ich rede hier live aus Manchester.
+Sprecher 2: Guten Abend! Wow, sind hier viele Leute!
+Sprecher 1: Dann lass uns anfangen.</textarea>
+        <p class="hint">A long turn can continue on the next line. Indent continuation lines that contain a colon.</p>
+        <button id="parse" class="secondary">Parse speakers</button>
+        <div class="section-head"><h2>02 / Cast the voices</h2><button id="randomize" class="secondary" disabled>Randomize</button></div>
+        <div id="speakers"><p class="hint">Parse your dialogue to assign voices.</p></div>
+        <div class="settings">
+          <label>Pause between turns <span class="input-unit"><input id="pause" type="number" min="0" max="3000" step="50" value="250"> ms</span></label>
+          <label>Language <select id="language"></select></label>
+        </div>
+        <button id="generate" class="primary" disabled>Add conversation to queue <span aria-hidden="true">↗</span></button>
+        <p class="hint">One job runs at a time. You can keep editing while it works.</p>
+      </section>
+      <section class="panel queue" aria-labelledby="queue-heading">
+        <div class="section-head"><h2 id="queue-heading">The queue</h2><span class="badge" id="queue-count">0 active</span></div>
+        <p class="hint" id="memory-mode">Model memory is released between chunks.</p>
+        <div id="jobs"><p class="empty">Your audio will appear here.</p></div>
+      </section>
+    </div>
+    <section class="panel library" aria-labelledby="library-heading">
+      <div class="section-head"><div><p class="eyebrow">FIND THE RIGHT SOUND</p><h2 id="library-heading">Voice library</h2></div><button id="refresh-voices" class="secondary">Refresh from disk</button></div>
+      <p class="hint">Each voice is a WAV and a metadata file in the voices folder. New and regenerated samples use the same job queue.</p>
+      <details><summary>Read the comparison text</summary><p id="comparison-text" lang="de"></p></details>
+      <div id="voices" class="voice-grid"></div>
+      <form id="add-voice">
+        <h3>Add a voice</h3>
+        <div class="voice-form"><label>Name<input id="voice-name" required maxlength="80" placeholder="e.g. Marlene"></label>
+        <label>Voice characteristics<textarea id="voice-description" rows="2" required minlength="5" maxlength="1000" placeholder="A warm, expressive German voice with a gentle, unhurried delivery."></textarea></label>
+        <button class="secondary" type="submit">Create sample</button></div>
+        <p class="hint">New samples use the German comparison text above. First use downloads the Qwen model; this can take several minutes.</p>
+      </form>
+    </section>
+    <footer>Made for a local session. Audio stays on this computer. <a href="/docs" target="_blank" rel="noopener">API documentation ↗</a></footer>
+  </main>
+</body>
+</html>

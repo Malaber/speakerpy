@@ -4,10 +4,25 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import wave
 
 LANGUAGES = ("German", "English", "Chinese", "Japanese", "Korean", "French",
              "Russian", "Portuguese", "Spanish", "Italian", "Auto")
+
+COMPARISON_TEXT = (
+    "Hallo und herzlich willkommen! Heute entdecken wir gemeinsam etwas Neues. "
+    "Draußen scheint die Sonne, und auf dem Marktplatz treffen sich viele Menschen. "
+    "Hast du einen Moment Zeit? Dann hör genau zu: Jede Stimme erzählt ihre eigene Geschichte."
+)
+
+# Only initial creation instructions. The library itself is always scanned from disk.
+STARTER_VOICES = (
+    ('clara', 'Clara', 'Eine erwachsene deutsche Sprecherin mit warmer, ruhiger, tiefer Stimme. '
+     'Sie spricht deutlich, freundlich und entspannt.'),
+    ('felix', 'Felix', 'Ein erwachsener deutscher Sprecher mit heller, lebhafter Stimme. '
+     'Er spricht fröhlich, dynamisch und neugierig.'),
+    ('theo', 'Theo', 'Ein älterer deutscher Sprecher mit tiefer, leicht rauer Stimme. '
+     'Er spricht gelassen und ausdrucksstark wie ein erfahrener Geschichtenerzähler.'),
+)
 
 
 @dataclass(frozen=True)
@@ -18,10 +33,11 @@ class Voice:
     ref_text: str
     reference: str
     fingerprint: str
+    description: str = ''
 
     def public(self):
         return {key: value for key, value in asdict(self).items()
-                if key in {"id", "name", "language"}}
+                if key in {"id", "name", "language", "description", "ref_text", "fingerprint"}}
 
 
 def load_voices(root: Path) -> tuple[dict[str, Voice], list[str]]:
@@ -49,7 +65,8 @@ def load_voices(root: Path) -> tuple[dict[str, Voice], list[str]]:
             if info.frames < 1 or info.duration > 60 or info.channels not in (1, 2):
                 raise ValueError("reference must be nonempty mono/stereo WAV, at most 60 seconds")
             voices[voice_id] = Voice(voice_id, data["name"], data["language"],
-                                    data["ref_text"], str(reference.resolve()), digest.hexdigest())
+                                    data["ref_text"], str(reference.resolve()), digest.hexdigest(),
+                                    str(data.get('description', '')))
         except (OSError, ValueError, TypeError, RuntimeError) as exc:
             errors.append(f"{voice_id}: {exc}")
     return voices, errors
