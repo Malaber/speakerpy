@@ -83,8 +83,12 @@ def smoke(c, voice='', url='http://127.0.0.1:8000', timeout=3600):
     if not voices:
         raise RuntimeError('Wait for a voice sample to finish, then run smoke again.')
     selected = voice or voices[0]['id']
-    job = request('/jobs', {'text': 'Sprecher 1: Hallo! Dies ist ein kurzer Test der Sprachausgabe.',
-                            'voices': {'Sprecher 1': selected}, 'language': 'German'})
+    text = 'Sprecher 1: Hallo! Dies ist ein kurzer Test der Sprachausgabe.'
+    mapping = {'Sprecher 1': selected}
+    if not voice and len(voices) > 1:
+        text += '\nSprecher 2: Guten Abend! Meine Stimme klingt anders.'
+        mapping['Sprecher 2'] = voices[1]['id']
+    job = request('/jobs', {'text': text, 'voices': mapping, 'language': 'German'})
     print(f'Job {job["id"]} queued', flush=True)
     deadline, previous = time.monotonic() + int(timeout), None
     while time.monotonic() < deadline:

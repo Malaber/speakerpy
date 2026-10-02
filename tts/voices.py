@@ -44,6 +44,8 @@ def load_voices(root: Path) -> tuple[dict[str, Voice], list[str]]:
     voices, errors = {}, []
     for metadata in sorted(root.glob("*/voice.json")):
         voice_id = metadata.parent.name
+        if voice_id.startswith('.'):
+            continue  # In-progress generation directories are not library entries.
         try:
             if not re.fullmatch(r"[a-zA-Z0-9_-]+", voice_id):
                 raise ValueError("folder name must contain only letters, numbers, _ or -")

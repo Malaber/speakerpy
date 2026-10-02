@@ -4,6 +4,7 @@ const terminal = new Set(['complete', 'failed', 'cancelled']);
 let library = [], speakers = [], parsedText = '', comparisonText = '', stream = null, watchedId = null;
 let voiceSignature = '', finishedVoices = '', polling = false;
 const cards = new Map();
+const voiceCards = new Map();
 
 function node(tag, text, className) {
   const el = document.createElement(tag);
@@ -66,9 +67,14 @@ async function refreshVoices() {
   const signature = JSON.stringify(library);
   if (signature !== voiceSignature) {
     voiceSignature = signature;
-    $('voices').replaceChildren();
-    if (!library.length) $('voices').append(node('p', 'Preparing your first three samples. Follow their progress in the queue. You can also add a voice below.', 'hint'));
+    const ids = new Set(library.map(voice => voice.id));
+    for (const [id, entry] of voiceCards) if (!ids.has(id)) { entry.el.remove(); voiceCards.delete(id); }
+    $('voices').querySelector('.empty-library')?.remove();
+    if (!library.length) $('voices').append(node('p', 'Preparing your first three samples. Follow their progress in the queue. You can also add a voice below.', 'hint empty-library'));
     for (const voice of library) {
+      const existing = voiceCards.get(voice.id);
+      // Preserve playback and in-progress description edits when another voice finishes.
+      if (existing?.fingerprint === voice.fingerprint) continue;
       const card = node('article', undefined, 'voice-card');
       const player = node('audio'); player.controls = true; player.preload = 'none';
       player.src = `/voices/${encodeURIComponent(voice.id)}/audio?v=${voice.fingerprint}`;
@@ -84,7 +90,8 @@ async function refreshVoices() {
         await refreshJobs();
       });
       card.append(node('h3', voice.name), node('p', voice.language, 'hint'), player, label, regenerate);
-      $('voices').append(card);
+      if (existing) existing.el.replaceWith(card); else $('voices').append(card);
+      voiceCards.set(voice.id, {el: card, fingerprint: voice.fingerprint});
     }
     renderSpeakers();
   }

@@ -236,8 +236,15 @@ class JobManager:
                         existing = destination / name
                         if existing.exists():
                             shutil.copy2(existing, destination / f'{name}.previous')
-                    (staging / 'reference.wav').replace(destination / 'reference.wav')
-                    (staging / 'voice.json').replace(destination / 'voice.json')
+                    try:
+                        (staging / 'reference.wav').replace(destination / 'reference.wav')
+                        (staging / 'voice.json').replace(destination / 'voice.json')
+                    except OSError:
+                        for name in ('reference.wav', 'voice.json'):
+                            backup = destination / f'{name}.previous'
+                            if backup.exists():
+                                shutil.copy2(backup, destination / name)
+                        raise
                 self.update(job, state='complete', completed=1, current=None)
         except Cancelled:
             self.update(job, state='cancelled', current=None)

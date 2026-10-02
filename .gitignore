@@ -7,3 +7,4 @@ output/
 *.mp3
 .DS_Store
 voices/*/
+:memory:.ses

@@ -265,3 +265,42 @@ def test_failed_mp3_retains_wav(client, monkeypatch):
     assert result['state'] == 'failed'
     assert client.get(result['downloads']['wav']).content[:4] == b'RIFF'
     assert 'mp3' not in result['downloads']
+
+
+def test_sse_reports_live_progress(client):
+    FakeEngine.gate = threading.Event()
+    job_id = submit(client)
+    wait(client, job_id, 'generating')
+    timer = threading.Timer(0.6, FakeEngine.gate.set)
+    timer.start()
+    try:
+        response = client.get(f'/jobs/{job_id}/events')
+    finally:
+        timer.join()
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+    assert events[0]['state'] == 'generating'
+    assert events[0]['completed'] == 0
+    assert events[-1]['state'] == 'complete'
+    assert events[-1]['completed'] == events[-1]['total'] == 2
+    assert response.headers['content-type'].startswith('text/event-stream')
+
+
+def test_publish_failure_restores_previous_voice(client, monkeypatch, tmp_path):
+    before = (tmp_path / 'voices/anna/voice.json').read_bytes()
+    original = Path.replace
+    def fail_metadata(source, target):
+        if source.parent.name.startswith('.') and source.name == 'voice.json':
+            raise OSError('simulated publication failure')
+        return original(source, target)
+    monkeypatch.setattr(Path, 'replace', fail_metadata)
+    job = client.post('/voices/anna/regenerate', json={'description': 'A regenerated warm voice'}).json()
+    assert wait(client, job['id'])['state'] == 'failed'
+    assert (tmp_path / 'voices/anna/voice.json').read_bytes() == before
+    assert client.get('/voices/anna/audio').content[:4] == b'RIFF'
+
+
+def test_staging_directories_not_listed(client, tmp_path):
+    staging = tmp_path / 'voices/.unfinished'
+    staging.mkdir()
+    (staging / 'voice.json').write_text('{}')
+    assert client.get('/voices').json()['errors'] == []
