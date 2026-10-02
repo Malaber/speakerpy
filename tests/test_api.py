@@ -233,3 +233,35 @@ def test_no_pause_inside_turn(client, tmp_path):
     assert status['state'] == 'complete'
     assert status['total'] > 2
     assert sf.info(tmp_path / 'output' / job_id / 'conversation.wav').frames == status['total'] * 2400 + 7200
+
+
+def test_shutdown_cancels_active_job(tmp_path):
+    add_voice(tmp_path)
+    FakeEngine.gate = threading.Event()
+    FakeEngine.fail_once = False
+    app = create_app(Config(root=tmp_path), FakeEngine)
+    with TestClient(app) as client:
+        job_id = submit(client, {'text': 'A: Still running', 'voices': {'A': 'anna'}})
+        wait(client, job_id, 'generating')
+    assert not app.state.manager.thread.is_alive()
+    assert app.state.manager.snapshot(job_id)['state'] == 'cancelled'
+    FakeEngine.gate = None
+
+
+def test_invalid_disk_metadata_reported(client, tmp_path):
+    directory = tmp_path / 'voices/broken'
+    directory.mkdir()
+    (directory / 'voice.json').write_text('[]')
+    result = client.get('/voices')
+    assert result.status_code == 200
+    assert 'JSON object' in result.json()['errors'][0]
+
+
+def test_failed_mp3_retains_wav(client, monkeypatch):
+    def fail(*args):
+        raise RuntimeError('encoder failed')
+    monkeypatch.setattr('tts.jobs.export_mp3', fail)
+    result = wait(client, submit(client))
+    assert result['state'] == 'failed'
+    assert client.get(result['downloads']['wav']).content[:4] == b'RIFF'
+    assert 'mp3' not in result['downloads']

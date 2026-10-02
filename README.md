@@ -86,7 +86,9 @@ TTS_RECYCLE_CHUNKS=4 ./run.sh
 | `TTS_CHUNK_TIMEOUT` | `1800` | Seconds per chunk including model download/loading |
 | `TTS_MODEL` | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | Clone model; the `0.6B-Base` model can reduce memory further |
 
-MPS uses float16, CPU uses float32, and attention uses SDPA. No FlashAttention
+MPS uses float16, CPU uses float32, and attention uses SDPA. Weights are loaded and
+cast on CPU before moving to MPS, avoiding duplicate checkpoint/cast allocations
+on the GPU during loading. No FlashAttention
 installation is required. Voice design always uses its separate 1.7B model.
 Each inference is limited to 2048 new tokens. Very long/unusual utterances may
 need smaller chunks or edited text. A subprocess limits accumulated memory;

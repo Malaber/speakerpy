@@ -81,10 +81,15 @@ def test_worker_failure_reaps_process(worker_stub, tmp_path, mode):
     assert worker_stub[0].poll() is not None
 
 
-def test_qwen_prompt_reuse_and_protocol(monkeypatch, tmp_path):
+@pytest.mark.parametrize('mps', [False, True])
+def test_qwen_prompt_reuse_and_protocol(monkeypatch, tmp_path, mps):
     from tts.worker import main
     calls = []
+    moves = []
     class Model:
+        def __init__(self):
+            tokenizer = SimpleNamespace(model=SimpleNamespace(to=lambda d: moves.append(('tokenizer', d))))
+            self.model = SimpleNamespace(to=lambda d: moves.append(('model', d)), speech_tokenizer=tokenizer)
         @classmethod
         def from_pretrained(cls, model, **kwargs):
             calls.append(('load', model, kwargs))
@@ -99,9 +104,10 @@ def test_qwen_prompt_reuse_and_protocol(monkeypatch, tmp_path):
         def generate_voice_design(self, **kwargs):
             calls.append(('design', kwargs))
             return [np.zeros(100)], 24000
-    torch = SimpleNamespace(set_num_threads=lambda n: None, float16='fp16', float32='fp32',
+    torch = SimpleNamespace(set_num_threads=lambda n: None, float16='fp16', float32='fp32', device=lambda d: d,
         Tensor=type('Tensor', (), {}), inference_mode=nullcontext,
-        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: False)))
+        backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: mps)),
+        mps=SimpleNamespace(set_per_process_memory_fraction=lambda f: None, empty_cache=lambda: None))
     monkeypatch.setitem(sys.modules, 'torch', torch)
     monkeypatch.setitem(sys.modules, 'qwen_tts', SimpleNamespace(Qwen3TTSModel=Model))
     request = {'operation': 'clone', 'device': 'auto', 'model': 'base', 'mps_fraction': .6,
@@ -114,6 +120,9 @@ def test_qwen_prompt_reuse_and_protocol(monkeypatch, tmp_path):
     main()
     assert [json.loads(line) for line in output.getvalue().splitlines()] == [{'ok': True}] * 2
     assert [c[0] for c in calls] == ['load', 'prompt', 'clone', 'clone']
+    assert calls[0][2]['device_map'] == {'': 'cpu'}
+    assert calls[0][2]['dtype'] == ('fp16' if mps else 'fp32')
+    assert moves == ([('model', 'mps'), ('tokenizer', 'mps')] if mps else [])
     assert calls[-1][1]['voice_clone_prompt'] == 'reusable prompt'
     calls.clear()
     request.update(operation='design', description='warm', model='design')

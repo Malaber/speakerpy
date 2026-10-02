@@ -30,8 +30,18 @@ def main():
                     print(f"Loading {request['model']} on {device}; MPS memory fraction {request['mps_fraction']}", flush=True)
                     dtype = torch.float16 if device == 'mps' else torch.float32
                     model = Qwen3TTSModel.from_pretrained(
-                        request['model'], device_map={'': device}, dtype=dtype,
+                        request['model'], device_map={'': 'cpu'}, dtype=dtype,
                         attn_implementation='sdpa')
+                    if device == 'mps':
+                        # Casting a BF16 checkpoint directly on MPS can retain the
+                        # original weights plus FP16 copies. Cast on CPU first.
+                        model.model.to(device)
+                        model.device = torch.device(device)
+                        tokenizer = model.model.speech_tokenizer
+                        tokenizer.model.to(device)
+                        tokenizer.device = torch.device(device)
+                        gc.collect()
+                        torch.mps.empty_cache()
                 with torch.inference_mode():
                     if request['operation'] == 'design':
                         wavs, rate = model.generate_voice_design(

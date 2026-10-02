@@ -48,6 +48,8 @@ def load_voices(root: Path) -> tuple[dict[str, Voice], list[str]]:
             if not re.fullmatch(r"[a-zA-Z0-9_-]+", voice_id):
                 raise ValueError("folder name must contain only letters, numbers, _ or -")
             data = json.loads(metadata.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError('voice.json must contain a JSON object')
             for field in ("name", "ref_text", "language"):
                 if not isinstance(data.get(field), str) or not data[field].strip():
                     raise ValueError(f"{field} must be a non-empty string")
