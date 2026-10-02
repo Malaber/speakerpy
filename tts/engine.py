@@ -60,7 +60,8 @@ class SubprocessEngine:
                 [sys.executable, '-m', 'tts.worker'], cwd=ROOT,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
                 text=True, bufsize=1,
-                env={**os.environ, 'TOKENIZERS_PARALLELISM': 'false', 'OMP_NUM_THREADS': '2'})
+                env={**os.environ, 'TOKENIZERS_PARALLELISM': 'false', 'OMP_NUM_THREADS': '2',
+                     'HF_HOME': os.getenv('HF_HOME', str(self.config.cache / 'huggingface'))})
         request.update(settings=self.config.generation, device=self.config.device,
                        mps_fraction=self.config.mps_fraction)
         try:

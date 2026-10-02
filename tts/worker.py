@@ -27,6 +27,7 @@ def main():
                         device = 'mps' if torch.backends.mps.is_available() else 'cpu'
                     if device == 'mps':
                         torch.mps.set_per_process_memory_fraction(request['mps_fraction'])
+                    print(f"Loading {request['model']} on {device}; MPS memory fraction {request['mps_fraction']}", flush=True)
                     dtype = torch.float16 if device == 'mps' else torch.float32
                     model = Qwen3TTSModel.from_pretrained(
                         request['model'], device_map={'': device}, dtype=dtype,
